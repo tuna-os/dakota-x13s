@@ -1,0 +1,100 @@
+name: Build dakota-x13s Live ISO
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'iso/**'
+      - '.github/workflows/build-iso.yml'
+  schedule:
+    # Daily after bootc image build (offset by 3h)
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip R2 upload)'
+        required: true
+        default: 'false'
+        type: boolean
+
+concurrency:
+  group: iso-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-iso:
+    # arm64 native runner — avoids QEMU emulation overhead for the Debian
+    # initramfs build and the squashfs compression step.
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo apt-get remove -y '^dotnet' '^mysql' '^postgresql' || true
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          sudo rm -rf /usr/share/dotnet /usr/share/swift /opt/hostedtoolcache
+          df -h
+
+      - name: Install dependencies
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
+            | bash -s -- --to /usr/local/bin
+          sudo apt-get install -y podman rclone mtools xorriso squashfs-tools \
+            dosfstools rsync
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build ISO
+        run: |
+          sudo just \
+            installer_channel=dev \
+            output_dir=output \
+            iso-sd-boot x13s
+
+      - name: Generate checksums
+        run: |
+          cd output
+          sha256sum x13s-live.iso > CHECKSUMS.txt
+          cp CHECKSUMS.txt CHECKSUMS-latest.txt
+          DATESTAMP=$(date +%Y%m%d)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          sed -i "s/x13s-live\.iso/x13s-live-${DATESTAMP}-${SHORT_SHA}.iso/g" CHECKSUMS.txt
+          mv x13s-live.iso x13s-live-${DATESTAMP}-${SHORT_SHA}.iso
+
+      - name: Upload to R2
+        if: github.event_name != 'pull_request' && !inputs.dry_run
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          rclone config create r2 s3 \
+            provider Cloudflare \
+            access_key_id "$R2_ACCESS_KEY_ID" \
+            secret_access_key "$R2_SECRET_ACCESS_KEY" \
+            endpoint "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          rclone copy output/ r2:bluefin-images/dakota-x13s/
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dakota-x13s-iso
+          path: |
+            output/x13s-live*.iso
+            output/CHECKSUMS*.txt
+          retention-days: 7
