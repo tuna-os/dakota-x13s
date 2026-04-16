@@ -13,8 +13,9 @@
 # ── Stage 1: Download X13s RPMs from jlinton/x13s COPR ───────────────────────
 FROM --platform=linux/arm64 fedora:42 AS x13s-rpms
 
-RUN dnf -y copr enable jlinton/x13s && \
-    dnf -y install --downloadonly --destdir=/pkgs \
+RUN mkdir -p /pkgs && \
+    dnf -y copr enable jlinton/x13s && \
+    dnf -y download --resolve --destdir=/pkgs \
         qcom-firmware \
         pd-mapper \
         x13s && \
