@@ -10,19 +10,15 @@
 # Switch a running bootc system:
 #   sudo bootc switch ghcr.io/hanthor/dakota-x13s:latest
 
-# ── Stage 1: Download and extract X13s RPMs from jlinton/x13s COPR ──────────
+# ── Stage 1: Install X13s packages from jlinton/x13s COPR into Fedora ────────
+# Files are then selectively COPYed into the GNOME OS layer below.
 FROM --platform=linux/arm64 fedora:42 AS x13s-extracted
 
-RUN mkdir -p /pkgs && \
-    dnf -y install cpio && \
-    dnf -y copr enable jlinton/x13s && \
-    dnf -y download --resolve --destdir=/pkgs \
+RUN dnf -y copr enable jlinton/x13s && \
+    dnf -y install \
         qcom-firmware \
         pd-mapper \
         x13s && \
-    for rpm in /pkgs/*.rpm; do \
-        echo "Extracting: $rpm" && cd / && rpm2cpio "$rpm" | cpio -idmv 2>/dev/null; \
-    done && \
     dnf clean all
 
 # ── Stage 3: Dakota + X13s hardware support ──────────────────────────────────
