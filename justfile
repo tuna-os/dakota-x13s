@@ -8,6 +8,8 @@ output_dir := "output"
 debug := "0"
 installer_channel := "stable"
 compression := "fast"
+skip_build := "0"
+cache_from := ""
 
 # Build in background; log to output_dir/build.log
 build-bg:
@@ -29,9 +31,14 @@ build-bg:
 
 # Build the ISO installer container image
 container:
+    #!/usr/bin/bash
+    set -euo pipefail
+    CACHE_ARGS=()
+    [[ -n "{{cache_from}}" ]] && CACHE_ARGS+=(--cache-from "{{cache_from}}")
     podman build --cap-add sys_admin --security-opt label=disable \
         --platform linux/arm64 \
         --layers \
+        "${CACHE_ARGS[@]}" \
         --build-arg DEBUG={{debug}} \
         --build-arg INSTALLER_CHANNEL={{installer_channel}} \
         -t x13s-installer ./iso
@@ -42,13 +49,15 @@ iso-sd-boot:
     set -euo pipefail
 
     echo "=== df before container build ===" && df -h
-    just debug={{debug}} installer_channel={{installer_channel}} container
-    echo "=== df after container build ===" && df -h
+    if [[ '{{skip_build}}' != '1' ]]; then
+        just debug={{debug}} installer_channel={{installer_channel}} container
+        echo "=== df after container build ===" && df -h
 
-    # Free intermediate layers: keeps x13s-installer, removes debian:sid,
-    # fedora:42, and dangling build cache from the multi-stage build.
-    podman image prune -f
-    echo "=== df after image prune ===" && df -h
+        # Free intermediate layers: keeps x13s-installer, removes debian:sid,
+        # fedora:42, and dangling build cache from the multi-stage build.
+        podman image prune -f
+        echo "=== df after image prune ===" && df -h
+    fi
 
     mkdir -p {{output_dir}}
     OUTPUT_DIR=$(realpath "{{output_dir}}")
@@ -65,14 +74,22 @@ iso-sd-boot:
     BOOT_TAR="${OUTPUT_DIR}/x13s-boot-files.tar"
     CS_STAGING="${OUTPUT_DIR}/x13s-cs-staging"
     SQUASHFS_ROOT="${OUTPUT_DIR}/x13s-sfs-root"
-    PAYLOAD_OCI="${OUTPUT_DIR}/x13s-payload.oci.tar"
+    PAYLOAD_OCI="${OUTPUT_DIR}/x13s-payload.oci"
 
-    trap "rm -f '${SQUASHFS}' '${BOOT_TAR}' '${PAYLOAD_OCI}'; _ns_rm '${CS_STAGING}' '${SQUASHFS_ROOT}' 2>/dev/null || true" EXIT
+    trap "rm -f '${SQUASHFS}' '${BOOT_TAR}'; rm -rf '${PAYLOAD_OCI}'; _ns_rm '${CS_STAGING}' '${SQUASHFS_ROOT}' 2>/dev/null || true" EXIT
 
     PAYLOAD_REF=$(cat iso/payload_ref | tr -d '[:space:]')
 
     _ns "
         set -euo pipefail
+        SFS_PID=\"\"
+        OCI_IMPORT_PID=\"\"
+        _inner_cleanup() {
+            [[ -n \"\${SFS_PID}\" ]] && kill \"\${SFS_PID}\" 2>/dev/null || true
+            [[ -n \"\${OCI_IMPORT_PID}\" ]] && kill \"\${OCI_IMPORT_PID}\" 2>/dev/null || true
+            podman image umount localhost/x13s-installer 2>/dev/null || true
+        }
+        trap _inner_cleanup EXIT
         MOUNT=\$(podman image mount localhost/x13s-installer)
         PATH=/usr/sbin:/usr/bin:\$PATH
 
@@ -86,45 +103,61 @@ iso-sd-boot:
         printf '[storage]\ndriver = \"vfs\"\nrunroot = \"%s\"\ngraphroot = \"%s\"\n' \
             \"\${LIVE_RUNROOT}\" \"\${SQUASHFS_STORAGE}\" > \"\${STORAGE_CONF}\"
 
-        echo 'Exporting dakota-x13s OCI image to archive...'
+        # Export to OCI directory (individual blobs, no single-file tar overhead)
+        echo 'Exporting dakota-x13s OCI image to directory...'
         skopeo copy \
             containers-storage:${PAYLOAD_REF} \
-            oci-archive:\${PAYLOAD_OCI}:${PAYLOAD_REF}
+            oci:\${PAYLOAD_OCI}:${PAYLOAD_REF}
 
-        echo 'Importing into squashfs containers-storage...'
+        # Import into VFS storage in the background while cp-a runs in parallel
+        echo 'Importing into squashfs containers-storage (background)...'
         CONTAINERS_STORAGE_CONF=\"\${STORAGE_CONF}\" \
         skopeo copy \
-            oci-archive:\${PAYLOAD_OCI}:${PAYLOAD_REF} \
-            containers-storage:${PAYLOAD_REF}
+            oci:\${PAYLOAD_OCI}:${PAYLOAD_REF} \
+            containers-storage:${PAYLOAD_REF} &
+        OCI_IMPORT_PID=\$!
 
-        # Remove OCI tar immediately after import — it's the largest temp file
-        rm -f \"\${PAYLOAD_OCI}\" \"\${STORAGE_CONF}\"
-        rm -rf \"\${LIVE_RUNROOT}\"
-        echo \"=== df after OCI import (before squashfs copy) ===\" && df -h
-
-        echo 'Building unified squashfs source tree...'
+        # Concurrently copy installer rootfs — reads MOUNT, writes SQUASHFS_ROOT
+        # (completely independent from the OCI import writing to CS_STAGING)
+        echo 'Building squashfs source tree (parallel with OCI import)...'
         mkdir -p \"\${SQUASHFS_ROOT}\"
         cp -a --reflink=auto \"\${MOUNT}/.\" \"\${SQUASHFS_ROOT}/\" 2>/dev/null || \
             cp -a \"\${MOUNT}/.\" \"\${SQUASHFS_ROOT}/\"
+
+        wait \${OCI_IMPORT_PID}
+        OCI_IMPORT_PID=\"\"
+        rm -rf \"\${PAYLOAD_OCI}\" \"\${STORAGE_CONF}\"
+        rm -rf \"\${LIVE_RUNROOT}\"
+        echo \"=== df after OCI import ===\" && df -h
+
         mkdir -p \"\${SQUASHFS_ROOT}/var/lib/containers\"
         mv \"\${CS_STAGING}/var/lib/containers/storage\" \
             \"\${SQUASHFS_ROOT}/var/lib/containers/storage\"
         rm -rf \"\${CS_STAGING}\"
 
-        SFS_LEVEL=3; SFS_BLOCK=131072
-        [[ '{{compression}}' == 'release' ]] && { SFS_LEVEL=15; SFS_BLOCK=1048576; }
+        # fast = lz4 (4× faster than zstd-3, slightly larger output)
+        # release = zstd-15 at 1MB blocks (max compression ratio)
+        if [[ '{{compression}}' == 'release' ]]; then
+            SFS_COMP=\"zstd\"; SFS_COMP_OPTS=\"-Xcompression-level 15\"; SFS_BLOCK=1048576
+        else
+            SFS_COMP=\"lz4\"; SFS_COMP_OPTS=\"\"; SFS_BLOCK=524288
+        fi
+        # Compress squashfs in background; export boot files in parallel
         mksquashfs \"\${SQUASHFS_ROOT}\" '${SQUASHFS}' \
-            -noappend -comp zstd -Xcompression-level \${SFS_LEVEL} -b \${SFS_BLOCK} \
+            -noappend -comp \${SFS_COMP} \${SFS_COMP_OPTS} -b \${SFS_BLOCK} \
             -processors 4 \
-            -e proc -e sys -e dev -e run -e tmp
+            -e proc -e sys -e dev -e run -e tmp &
+        SFS_PID=\$!
 
-        rm -rf \"\${SQUASHFS_ROOT}\"
-
-        # Export boot files: kernel modules (for DTB) + EFI binaries
         tar -C \"\$MOUNT\" \
             -cf '${BOOT_TAR}' \
             ./usr/lib/modules \
             ./usr/lib/systemd/boot/efi
+        wait \${SFS_PID}
+        SFS_PID=\"\"
+        rm -rf \"\${SQUASHFS_ROOT}\"
+
+        trap - EXIT
         podman image umount localhost/x13s-installer
     "
 
