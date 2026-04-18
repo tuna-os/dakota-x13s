@@ -94,7 +94,8 @@ for candidate in \
 done
 
 if [[ -z "$X13S_DTB" ]]; then
-    echo "Warning: DTB not found in boot tar — boot may rely on firmware DTB" >&2
+    echo "Error: X13s DTB not found in boot tar — ISO will not boot on ThinkPad X13s" >&2
+    exit 3
 fi
 
 echo "Kernel: ${KERNEL}"

@@ -24,6 +24,7 @@ RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         dracut \
         dmsetup \
+        linux-image-arm64 \
     && rm -rf /var/lib/apt/lists/*
 
 # Import dakota-x13s kernel module tree so dracut targets the correct kernel
@@ -38,6 +39,12 @@ RUN set -ex; \
         /tmp/initramfs.img "${kernel}"; \
     ls -lh /tmp/initramfs.img
 
+# Extract X13s DTB from Debian kernel package
+RUN DTB=$(find /usr/lib/linux-image* -name "sc8280xp-lenovo-thinkpad-x13s.dtb" 2>/dev/null | head -1); \
+    [ -n "$DTB" ] || { echo "ERROR: sc8280xp-lenovo-thinkpad-x13s.dtb not found in linux-image-arm64" >&2; exit 1; }; \
+    echo "DTB: $DTB"; \
+    cp "$DTB" /tmp/x13s.dtb
+
 # ── Stage 3: Final dakota-x13s live image ────────────────────────────────────
 FROM ghcr.io/tuna-os/dakota-x13s:latest
 
@@ -47,11 +54,17 @@ ENV INSTALLER_CHANNEL=${INSTALLER_CHANNEL}
 ARG DEBUG=0
 ENV DEBUG=${DEBUG}
 
-# Replace the OCI-mode initramfs with the dmsquash-live initramfs from stage 2
+# Replace the OCI-mode initramfs with the dmsquash-live initramfs from stage 2.
+# Also install the X13s DTB (Debian kernel package ships it; GNOME OS kernel doesn't).
+# The DTB is placed in the standard modules path so build-iso.sh picks it up.
 COPY --from=initramfs-builder /tmp/initramfs.img /tmp/initramfs.img
+COPY --from=initramfs-builder /tmp/x13s.dtb /tmp/x13s.dtb
 RUN kernel=$(ls /usr/lib/modules | sort -V | tail -1) && \
     mv /tmp/initramfs.img "/usr/lib/modules/${kernel}/initramfs.img" && \
-    echo "Replaced initramfs for kernel ${kernel}"
+    mkdir -p "/usr/lib/modules/${kernel}/dtb/qcom" && \
+    mv /tmp/x13s.dtb "/usr/lib/modules/${kernel}/dtb/qcom/sc8280xp-lenovo-thinkpad-x13s.dtb" && \
+    echo "Replaced initramfs for kernel ${kernel}" && \
+    echo "Installed X13s DTB for kernel ${kernel}"
 
 # ── Flatpak install layer ─────────────────────────────────────────────────────
 COPY src/flatpaks /tmp/flatpaks-list
