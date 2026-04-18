@@ -11,13 +11,21 @@
 #   sudo bootc switch ghcr.io/hanthor/dakota-x13s:latest
 
 # ── Stage 1: Extract X13s files from standard Fedora packages ────────────────
-# linux-firmware ships SC8280XP blobs; pd-mapper is in the Fedora main repo.
+# linux-firmware ships SC8280XP blobs. pd-mapper was retired from Fedora after
+# f40; build it from source (trivial C program, <10 files).
 # Files are selectively COPYed into the GNOME OS layer below.
 FROM --platform=linux/arm64 fedora:42 AS x13s-extracted
 
+# pd-mapper v1.0 — Qualcomm power-domain client to PD handle mapper
+# source: https://github.com/andersson/pd-mapper
 RUN dnf -y install \
-        linux-firmware \
-        pd-mapper && \
+        gcc make qrtr-devel \
+        linux-firmware && \
+    curl -fsSL https://github.com/andersson/pd-mapper/archive/refs/tags/v1.0.tar.gz \
+        | tar -xz -C /tmp && \
+    make -C /tmp/pd-mapper-1.0 prefix=/usr install && \
+    rm -rf /tmp/pd-mapper-1.0 && \
+    dnf remove -y gcc make qrtr-devel && \
     dnf clean all
 
 # ── Stage 3: Dakota + X13s hardware support ──────────────────────────────────
