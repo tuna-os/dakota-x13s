@@ -203,6 +203,7 @@ echo "Assembling ISO..."
 xorriso -as mkisofs \
     -o "$OUTPUT_ISO" \
     -R -J \
+    -iso-level 3 \
     -V "$LABEL" \
     -e images/efiboot.img \
     -no-emul-boot \
