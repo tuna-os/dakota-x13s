@@ -155,7 +155,7 @@ sort-key   01
 linux      /boot/aarch64/vmlinuz
 initrd     /boot/aarch64/initramfs.img
 ${DTB_LINE}
-options    root=live:CDLABEL=${LABEL} rd.live.image rd.live.overlay.thin efi=noruntime arm64.nopauth clk_ignore_unused pd_ignore_unused enforcing=0 quiet
+options    root=live:CDLABEL=${LABEL} rd.live.image rd.live.overlay.thin efi=noruntime arm64.nopauth clk_ignore_unused pd_ignore_unused enforcing=0 audit=0 quiet
 ENTRYEOF
 
 cat > "${ISO_ROOT}/loader/entries/x13s-debug.conf" << ENTRYEOF
@@ -164,7 +164,7 @@ sort-key   02
 linux      /boot/aarch64/vmlinuz
 initrd     /boot/aarch64/initramfs.img
 ${DTB_LINE}
-options    root=live:CDLABEL=${LABEL} rd.live.image efi=noruntime arm64.nopauth clk_ignore_unused pd_ignore_unused enforcing=0 rd.shell
+options    root=live:CDLABEL=${LABEL} rd.live.image efi=noruntime arm64.nopauth clk_ignore_unused pd_ignore_unused enforcing=0 audit=0 rd.shell
 ENTRYEOF
 
 # ─────────────────────────────────────────────────────────────────────────────
