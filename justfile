@@ -109,10 +109,16 @@ iso-sd-boot:
         rm -rf \"\${LIVE_RUNROOT}\"
         echo \"=== df after VFS import ===\" && df -h
 
-        # Bind-mount installer rootfs + VFS store for mksquashfs.
-        # Avoids ~65 GB cp -a; mksquashfs reads both through the merged view.
+        # Overlay-mount installer rootfs + VFS store for mksquashfs.
+        # Plain bind would be read-only; overlayfs gives a writable merged view
+        # so we can bind the VFS store into /var/lib/containers/storage.
         MERGED_ROOT=\"\$(mktemp -d '${OUTPUT_DIR}'/merged-XXXXXX)\"
-        mount --bind \"\${MOUNT}\" \"\${MERGED_ROOT}\"
+        OVERLAY_UPPER=\"\${CS_STAGING}/upper\"
+        OVERLAY_WORK=\"\${CS_STAGING}/work\"
+        mkdir -p \"\${OVERLAY_UPPER}\" \"\${OVERLAY_WORK}\"
+        mount -t overlay overlay \
+            -o \"lowerdir=\${MOUNT},upperdir=\${OVERLAY_UPPER},workdir=\${OVERLAY_WORK}\" \
+            \"\${MERGED_ROOT}\"
         mkdir -p \"\${MERGED_ROOT}/var/lib/containers/storage\"
         mount --bind \"\${SQUASHFS_STORAGE}\" \"\${MERGED_ROOT}/var/lib/containers/storage\"
 
