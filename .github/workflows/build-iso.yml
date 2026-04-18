@@ -22,73 +22,15 @@ concurrency:
   group: iso-build-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  INSTALLER_IMAGE: ghcr.io/${{ github.repository_owner }}/x13s-installer
-
 jobs:
-  build-installer:
-    name: Build installer container
+  build-iso:
+    name: Build ISO
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Free disk space
-        run: |
-          sudo apt-get remove -y '^dotnet' '^mysql' '^postgresql' '^ghc' \
-            '^libgcc-' '^libstdc' '^llvm' 'php.*' '^ruby' '^gcc-' '^cpp-' || true
-          sudo apt-get autoremove -y
-          sudo apt-get clean
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /usr/share/swift \
-            /opt/hostedtoolcache \
-            /usr/local/lib/android \
-            /usr/local/share/powershell \
-            /usr/share/doc \
-            /usr/share/man
-          df -h
-
-      - name: Install dependencies
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-            | bash -s -- --to /usr/local/bin
-          sudo apt-get update
-          sudo apt-get install -y podman
-
-      - name: Login to GHCR
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | \
-            sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: Pull installer cache
-        run: |
-          sudo podman pull "${{ env.INSTALLER_IMAGE }}:cache" || true
-          sudo podman tag "${{ env.INSTALLER_IMAGE }}:cache" localhost/x13s-installer:latest 2>/dev/null || true
-
-      - name: Build installer container
-        run: |
-          sudo just \
-            installer_channel=dev \
-            container
-
-      - name: Push installer to GHCR
-        run: |
-          sudo podman tag localhost/x13s-installer "${{ env.INSTALLER_IMAGE }}:${{ github.sha }}"
-          sudo podman tag localhost/x13s-installer "${{ env.INSTALLER_IMAGE }}:cache"
-          sudo podman push "${{ env.INSTALLER_IMAGE }}:${{ github.sha }}"
-          sudo podman push "${{ env.INSTALLER_IMAGE }}:cache"
-
-  build-iso:
-    name: Build ISO
-    runs-on: ubuntu-24.04-arm
-    needs: build-installer
-    permissions:
-      contents: read
-      packages: read
+    env:
+      INSTALLER_IMAGE: ghcr.io/${{ github.repository_owner }}/x13s-installer
 
     steps:
       - uses: actions/checkout@v4
@@ -121,19 +63,24 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Pull installer image
+      - name: Pull installer cache
         run: |
-          sudo podman pull "${{ env.INSTALLER_IMAGE }}:${{ github.sha }}"
-          sudo podman tag "${{ env.INSTALLER_IMAGE }}:${{ github.sha }}" localhost/x13s-installer
+          sudo podman pull "${{ env.INSTALLER_IMAGE }}:cache" || true
+          sudo podman tag "${{ env.INSTALLER_IMAGE }}:cache" localhost/x13s-installer:latest 2>/dev/null || true
+
+      - name: Build installer container
+        run: |
+          sudo just installer_channel=dev container
+
+      - name: Push installer cache
+        run: |
+          sudo podman tag localhost/x13s-installer "${{ env.INSTALLER_IMAGE }}:cache"
+          sudo podman push "${{ env.INSTALLER_IMAGE }}:cache"
 
       - name: Build ISO
         run: |
           echo "=== df at start of ISO build ===" && df -h
-          sudo just \
-            installer_channel=dev \
-            skip_build=1 \
-            output_dir=output \
-            iso-sd-boot
+          sudo just installer_channel=dev skip_build=1 output_dir=output iso-sd-boot
           sudo chown -R "$(id -u):$(id -g)" output
           echo "=== df after ISO build ===" && df -h
 
