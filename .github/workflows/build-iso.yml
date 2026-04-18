@@ -63,7 +63,7 @@ jobs:
           sudo just \
             installer_channel=dev \
             output_dir=output \
-            iso-sd-boot x13s
+            iso-sd-boot
 
       - name: Generate checksums
         run: |
