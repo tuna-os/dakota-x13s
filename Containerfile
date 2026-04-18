@@ -1,8 +1,8 @@
 # dakota-x13s — ThinkPad X13s (Qualcomm SC8280XP / aarch64) bootc image
 #
 # Layers Qualcomm X13s hardware support onto the Project Bluefin Dakota image.
-# Firmware, pd-mapper, and kernel config are extracted from the jlinton/x13s
-# Fedora COPR so no RPM toolchain is needed in the final GNOME OS image.
+# Firmware blobs (qcom/sc8280xp) are in upstream linux-firmware; pd-mapper is
+# a standard Fedora package. No COPR required.
 #
 # Build:
 #   podman build --platform linux/arm64 -t dakota-x13s .
@@ -10,17 +10,14 @@
 # Switch a running bootc system:
 #   sudo bootc switch ghcr.io/hanthor/dakota-x13s:latest
 
-# ── Stage 1: Install X13s packages from jlinton/x13s COPR into Fedora ────────
-# Files are then selectively COPYed into the GNOME OS layer below.
-FROM --platform=linux/arm64 fedora:40 AS x13s-extracted
+# ── Stage 1: Extract X13s files from standard Fedora packages ────────────────
+# linux-firmware ships SC8280XP blobs; pd-mapper is in the Fedora main repo.
+# Files are selectively COPYed into the GNOME OS layer below.
+FROM --platform=linux/arm64 fedora:42 AS x13s-extracted
 
-RUN curl -fsSL \
-        https://copr.fedorainfracloud.org/coprs/jlinton/x13s/repo/fedora-40/jlinton-x13s-fedora-40.repo \
-        -o /etc/yum.repos.d/jlinton-x13s.repo && \
-    dnf -y install \
-        qcom-firmware \
-        pd-mapper \
-        x13s && \
+RUN dnf -y install \
+        linux-firmware \
+        pd-mapper && \
     dnf clean all
 
 # ── Stage 3: Dakota + X13s hardware support ──────────────────────────────────
