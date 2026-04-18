@@ -67,67 +67,54 @@ iso-sd-boot:
     SQUASHFS="${OUTPUT_DIR}/x13s-rootfs.sfs"
     BOOT_TAR="${OUTPUT_DIR}/x13s-boot-files.tar"
     CS_STAGING="${OUTPUT_DIR}/x13s-cs-staging"
-    SQUASHFS_ROOT="${OUTPUT_DIR}/x13s-sfs-root"
-    PAYLOAD_OCI="${OUTPUT_DIR}/x13s-payload.oci"
 
-    trap "rm -f '${SQUASHFS}' '${BOOT_TAR}'; rm -rf '${PAYLOAD_OCI}'; _ns_rm '${CS_STAGING}' '${SQUASHFS_ROOT}' 2>/dev/null || true" EXIT
+    trap "rm -f '${SQUASHFS}' '${BOOT_TAR}'; rm -rf '${CS_STAGING}' 2>/dev/null || true" EXIT
 
     PAYLOAD_REF=$(cat iso/payload_ref | tr -d '[:space:]')
 
     _ns "
         set -euo pipefail
         SFS_PID=\"\"
-        OCI_IMPORT_PID=\"\"
+        MERGED_ROOT=\"\"
         _inner_cleanup() {
             [[ -n \"\${SFS_PID}\" ]] && kill \"\${SFS_PID}\" 2>/dev/null || true
-            [[ -n \"\${OCI_IMPORT_PID}\" ]] && kill \"\${OCI_IMPORT_PID}\" 2>/dev/null || true
+            if [[ -n \"\${MERGED_ROOT}\" ]]; then
+                umount \"\${MERGED_ROOT}/var/lib/containers/storage\" 2>/dev/null || true
+                umount \"\${MERGED_ROOT}\" 2>/dev/null || true
+                rmdir \"\${MERGED_ROOT}\" 2>/dev/null || true
+            fi
             podman image umount localhost/x13s-installer 2>/dev/null || true
         }
         trap _inner_cleanup EXIT
         MOUNT=\$(podman image mount localhost/x13s-installer)
         PATH=/usr/sbin:/usr/bin:\$PATH
 
-        PAYLOAD_OCI='${PAYLOAD_OCI}'
         CS_STAGING='${CS_STAGING}'
-        SQUASHFS_ROOT='${SQUASHFS_ROOT}'
         SQUASHFS_STORAGE=\"\${CS_STAGING}/var/lib/containers/storage\"
-        LIVE_RUNROOT=\"\$(mktemp -d '${OUTPUT_DIR}'/live-runroot-XXXXXX)\"
-        STORAGE_CONF=\"\$(mktemp '${OUTPUT_DIR}'/live-storage-XXXXXX.conf)\"
-        mkdir -p \"\${SQUASHFS_STORAGE}\"
+        LIVE_RUNROOT=\"\${CS_STAGING}/live-runroot\"
+        STORAGE_CONF=\"\${CS_STAGING}/live-storage.conf\"
+        mkdir -p \"\${SQUASHFS_STORAGE}\" \"\${LIVE_RUNROOT}\"
         printf '[storage]\ndriver = \"vfs\"\nrunroot = \"%s\"\ngraphroot = \"%s\"\n' \
             \"\${LIVE_RUNROOT}\" \"\${SQUASHFS_STORAGE}\" > \"\${STORAGE_CONF}\"
 
-        # Export to OCI directory (individual blobs, no single-file tar overhead)
-        echo 'Exporting dakota-x13s OCI image to directory...'
-        skopeo copy \
-            containers-storage:${PAYLOAD_REF} \
-            oci:\${PAYLOAD_OCI}:${PAYLOAD_REF}
-
-        # Import into VFS storage in the background while cp-a runs in parallel
-        echo 'Importing into squashfs containers-storage (background)...'
+        # Pull payload image directly from registry into VFS containers-storage.
+        # Using docker:// avoids pulling to overlay on the host (saves ~65 GB disk).
+        echo 'Importing payload into VFS containers-storage...'
         CONTAINERS_STORAGE_CONF=\"\${STORAGE_CONF}\" \
         skopeo copy \
-            oci:\${PAYLOAD_OCI}:${PAYLOAD_REF} \
-            containers-storage:${PAYLOAD_REF} &
-        OCI_IMPORT_PID=\$!
+            docker://${PAYLOAD_REF} \
+            containers-storage:${PAYLOAD_REF}
 
-        # Concurrently copy installer rootfs — reads MOUNT, writes SQUASHFS_ROOT
-        # (completely independent from the OCI import writing to CS_STAGING)
-        echo 'Building squashfs source tree (parallel with OCI import)...'
-        mkdir -p \"\${SQUASHFS_ROOT}\"
-        cp -a --reflink=auto \"\${MOUNT}/.\" \"\${SQUASHFS_ROOT}/\" 2>/dev/null || \
-            cp -a \"\${MOUNT}/.\" \"\${SQUASHFS_ROOT}/\"
-
-        wait \${OCI_IMPORT_PID}
-        OCI_IMPORT_PID=\"\"
-        rm -rf \"\${PAYLOAD_OCI}\" \"\${STORAGE_CONF}\"
+        rm -f \"\${STORAGE_CONF}\"
         rm -rf \"\${LIVE_RUNROOT}\"
-        echo \"=== df after OCI import ===\" && df -h
+        echo \"=== df after VFS import ===\" && df -h
 
-        mkdir -p \"\${SQUASHFS_ROOT}/var/lib/containers\"
-        mv \"\${CS_STAGING}/var/lib/containers/storage\" \
-            \"\${SQUASHFS_ROOT}/var/lib/containers/storage\"
-        rm -rf \"\${CS_STAGING}\"
+        # Bind-mount installer rootfs + VFS store for mksquashfs.
+        # Avoids ~65 GB cp -a; mksquashfs reads both through the merged view.
+        MERGED_ROOT=\"\$(mktemp -d '${OUTPUT_DIR}'/merged-XXXXXX)\"
+        mount --bind \"\${MOUNT}\" \"\${MERGED_ROOT}\"
+        mkdir -p \"\${MERGED_ROOT}/var/lib/containers/storage\"
+        mount --bind \"\${SQUASHFS_STORAGE}\" \"\${MERGED_ROOT}/var/lib/containers/storage\"
 
         # fast = lz4 (4× faster than zstd-3, slightly larger output)
         # release = zstd-15 at 1MB blocks (max compression ratio)
@@ -137,19 +124,24 @@ iso-sd-boot:
             SFS_COMP=\"lz4\"; SFS_COMP_OPTS=\"\"; SFS_BLOCK=524288
         fi
         # Compress squashfs in background; export boot files in parallel
-        mksquashfs \"\${SQUASHFS_ROOT}\" '${SQUASHFS}' \
+        mksquashfs \"\${MERGED_ROOT}\" '${SQUASHFS}' \
             -noappend -comp \${SFS_COMP} \${SFS_COMP_OPTS} -b \${SFS_BLOCK} \
             -processors 4 \
             -e proc -e sys -e dev -e run -e tmp &
         SFS_PID=\$!
 
-        tar -C \"\$MOUNT\" \
+        tar -C \"\${MOUNT}\" \
             -cf '${BOOT_TAR}' \
             ./usr/lib/modules \
             ./usr/lib/systemd/boot/efi
         wait \${SFS_PID}
         SFS_PID=\"\"
-        rm -rf \"\${SQUASHFS_ROOT}\"
+
+        umount \"\${MERGED_ROOT}/var/lib/containers/storage\"
+        umount \"\${MERGED_ROOT}\"
+        rmdir \"\${MERGED_ROOT}\"
+        MERGED_ROOT=\"\"
+        rm -rf '${CS_STAGING}'
 
         trap - EXIT
         podman image umount localhost/x13s-installer
