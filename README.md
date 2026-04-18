@@ -2,6 +2,13 @@
 
 [Project Bluefin Dakota](https://github.com/projectbluefin/dakota) on the **Lenovo ThinkPad X13s** (Qualcomm SC8280XP / aarch64).
 
+## Download
+
+| File | Link |
+|------|------|
+| **Live ISO (latest)** | [x13s-live-latest.iso](https://download.tunaos.org/dakota-x13s/x13s-live-latest.iso) |
+| Checksums | [CHECKSUMS-latest.txt](https://download.tunaos.org/dakota-x13s/CHECKSUMS-latest.txt) |
+
 ## Status
 
 Alpha — tracking upstream dakota.
@@ -62,15 +69,9 @@ bst --option arch aarch64 build oci/bluefin.bst
 
 ### 2. Build the X13s bootc image
 
-Replace `hanthor` with your GitHub username/org in:
-- `Containerfile` (FROM line)
-- `iso/Containerfile` (FROM lines)
-- `iso/payload_ref`
-- `iso/src/etc/bootc-installer/images.json`
-
 ```bash
-podman build --platform linux/arm64 -t ghcr.io/hanthor/dakota-x13s:latest .
-podman push ghcr.io/hanthor/dakota-x13s:latest
+podman build --platform linux/arm64 -t ghcr.io/tuna-os/dakota-x13s:latest .
+podman push ghcr.io/tuna-os/dakota-x13s:latest
 ```
 
 ### 3. Build the live ISO
@@ -95,7 +96,7 @@ just flash-usb /dev/sdX
 ## Upgrading an existing bootc system
 
 ```bash
-sudo bootc switch ghcr.io/hanthor/dakota-x13s:latest
+sudo bootc switch ghcr.io/tuna-os/dakota-x13s:latest
 sudo reboot
 ```
 
