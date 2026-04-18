@@ -9,7 +9,6 @@ debug := "0"
 installer_channel := "stable"
 compression := "fast"
 skip_build := "0"
-cache_from := ""
 
 # Build in background; log to output_dir/build.log
 build-bg:
@@ -31,14 +30,9 @@ build-bg:
 
 # Build the ISO installer container image
 container:
-    #!/usr/bin/bash
-    set -euo pipefail
-    CACHE_ARGS=()
-    [[ -n "{{cache_from}}" ]] && CACHE_ARGS+=(--cache-from "{{cache_from}}")
     podman build --cap-add sys_admin --security-opt label=disable \
         --platform linux/arm64 \
         --layers \
-        "${CACHE_ARGS[@]}" \
         --build-arg DEBUG={{debug}} \
         --build-arg INSTALLER_CHANNEL={{installer_channel}} \
         -t x13s-installer ./iso

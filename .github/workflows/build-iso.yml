@@ -65,13 +65,14 @@ jobs:
             sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Pull installer cache
-        run: sudo podman pull "${{ env.INSTALLER_IMAGE }}:cache" || true
+        run: |
+          sudo podman pull "${{ env.INSTALLER_IMAGE }}:cache" || true
+          sudo podman tag "${{ env.INSTALLER_IMAGE }}:cache" localhost/x13s-installer:latest 2>/dev/null || true
 
       - name: Build installer container
         run: |
           sudo just \
             installer_channel=dev \
-            cache_from="${{ env.INSTALLER_IMAGE }}:cache" \
             container
 
       - name: Push installer to GHCR
