@@ -3,28 +3,42 @@
 # Build with:
 #   just container x13s
 #
-# Three-stage build:
-#   1. dakota-x13s-ref   — source of kernel modules + X13s DTB
-#   2. initramfs-builder — Debian arm64: builds a dmsquash-live initramfs
+# Four-stage build:
+#   1. dakota-ref        — source of kernel modules
+#   2. dtb-provider      — Fedora arm64: provides the X13s DTB
+#                          (GNOME OS / freedesktop-sdk kernel does not ship DTBs)
+#   3. initramfs-builder — Debian arm64: builds a dmsquash-live initramfs
 #                          against the dakota-x13s kernel modules
-#   3. final             — dakota-x13s: receives the rebuilt initramfs + live env
+#   4. final             — dakota-x13s: receives the rebuilt initramfs + DTB
 #
 # dakota-x13s is GNOME OS / freedesktop-sdk based — no dnf, no dracut in image.
 # The initramfs is built in a separate Debian arm64 stage; only initramfs.img
-# crosses the stage boundary.
+# and the X13s DTB cross the stage boundary into the final image.
 # The ISO bootloader is systemd-boot (systemd-bootaa64.efi already in the image).
 
-# ── Stage 1: dakota-x13s reference (kernel modules + DTB source) ─────────────
+# ── Stage 1: dakota-x13s reference (kernel modules) ──────────────────────────
 FROM ghcr.io/tuna-os/dakota-x13s:latest AS dakota-ref
 
-# ── Stage 2: Debian arm64 — builds the dmsquash-live initramfs ───────────────
+# ── Stage 2: Fedora arm64 — provides the X13s DTB ────────────────────────────
+# Fedora's kernel-core ships DTBs at /usr/lib/modules/<kver>/dtb/.
+# The GNOME OS (freedesktop-sdk) kernel does not ship device tree blobs, so we
+# pull them from Fedora's mainline kernel package.
+FROM --platform=linux/arm64 fedora:42 AS dtb-provider
+
+RUN dnf -y install --setopt=install_weak_deps=False kernel-core && \
+    DTB=$(find /usr/lib/modules -path "*/dtb/qcom/sc8280xp-lenovo-thinkpad-x13s.dtb" | head -1) && \
+    [ -n "$DTB" ] || { echo "ERROR: X13s DTB not found in Fedora kernel-core" >&2; \
+        ls /usr/lib/modules/*/dtb/qcom/ 2>/dev/null | head -20; exit 1; } && \
+    echo "DTB: $DTB" && \
+    cp "$DTB" /tmp/x13s.dtb
+
+# ── Stage 3: Debian arm64 — builds the dmsquash-live initramfs ───────────────
 FROM --platform=linux/arm64 debian:sid AS initramfs-builder
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         dracut \
         dmsetup \
-        linux-image-arm64 \
     && rm -rf /var/lib/apt/lists/*
 
 # Import dakota-x13s kernel module tree so dracut targets the correct kernel
@@ -39,13 +53,7 @@ RUN set -ex; \
         /tmp/initramfs.img "${kernel}"; \
     ls -lh /tmp/initramfs.img
 
-# Extract X13s DTB from Debian kernel package
-RUN DTB=$(find /usr/lib/linux-image* -name "sc8280xp-lenovo-thinkpad-x13s.dtb" 2>/dev/null | head -1); \
-    [ -n "$DTB" ] || { echo "ERROR: sc8280xp-lenovo-thinkpad-x13s.dtb not found in linux-image-arm64" >&2; exit 1; }; \
-    echo "DTB: $DTB"; \
-    cp "$DTB" /tmp/x13s.dtb
-
-# ── Stage 3: Final dakota-x13s live image ────────────────────────────────────
+# ── Stage 4: Final dakota-x13s live image ────────────────────────────────────
 FROM ghcr.io/tuna-os/dakota-x13s:latest
 
 ARG INSTALLER_CHANNEL=stable
@@ -54,11 +62,11 @@ ENV INSTALLER_CHANNEL=${INSTALLER_CHANNEL}
 ARG DEBUG=0
 ENV DEBUG=${DEBUG}
 
-# Replace the OCI-mode initramfs with the dmsquash-live initramfs from stage 2.
-# Also install the X13s DTB (Debian kernel package ships it; GNOME OS kernel doesn't).
+# Replace the OCI-mode initramfs with the dmsquash-live initramfs.
+# Install the X13s DTB from the Fedora stage (GNOME OS kernel doesn't ship DTBs).
 # The DTB is placed in the standard modules path so build-iso.sh picks it up.
 COPY --from=initramfs-builder /tmp/initramfs.img /tmp/initramfs.img
-COPY --from=initramfs-builder /tmp/x13s.dtb /tmp/x13s.dtb
+COPY --from=dtb-provider /tmp/x13s.dtb /tmp/x13s.dtb
 RUN kernel=$(ls /usr/lib/modules | sort -V | tail -1) && \
     mv /tmp/initramfs.img "/usr/lib/modules/${kernel}/initramfs.img" && \
     mkdir -p "/usr/lib/modules/${kernel}/dtb/qcom" && \
